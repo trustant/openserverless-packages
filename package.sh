@@ -59,51 +59,70 @@ cleanup() { sudo rm -rf "${PKGROOT}"; }
 trap cleanup EXIT
 
 
-# Home of the "ops" user (uid/gid 767), shipped inside the package so the
-# platform can be driven by a dedicated unprivileged account. Unlike the rest of
-# the payload this tree does not pre-exist on the build host, so it is staged at
-# its real install location and then tarred from there like everything else.
-OPSHOME="/var/lib/ops"
-for f in /usr/bin/ops "${HOME}/.ops" /etc/rancher/k3s/k3s.yaml; do
+# Home of the "trustant" user (uid/gid 769), shipped inside the package so the
+# platform can be driven by a dedicated unprivileged account. setup.sh already
+# created this home on the build host and ran `ops -update` as that user, so
+# ${TRUHOME}/.ops is the real, trustant-owned config tree; we only top it up
+# with the CLI, the kubeconfig and the shell environment, then tar it from its
+# real location like everything else.
+TRUHOME="/home/trustant"
+
+# Fall back to the build operator's own ~/.ops if setup.sh did not run as
+# expected and the trustant home has no config tree yet.
+OPS_CONFIG_SRC="${TRUHOME}/.ops"
+if [ ! -d "${OPS_CONFIG_SRC}" ]; then
+    OPS_CONFIG_SRC="${HOME}/.ops"
+fi
+
+for f in /usr/bin/ops "${OPS_CONFIG_SRC}" /etc/rancher/k3s/k3s.yaml; do
     if [ ! -e "$f" ]; then
         echo "Missing required file: $f" >&2
         exit 1
     fi
 done
-sudo rm -rf "${OPSHOME}"
-sudo install -d -m 0755 "${OPSHOME}" "${OPSHOME}/.local" "${OPSHOME}/.local/bin"
+
+sudo install -d -m 0755 "${TRUHOME}" "${TRUHOME}/.local" "${TRUHOME}/.local/bin"
 
 # The ops CLI. setup.sh puts it at /usr/bin/ops on the build host, which is the
-# source here; the package ships it ONLY under the ops home, not in /usr/bin.
-sudo cp -a /usr/bin/ops "${OPSHOME}/.local/bin/ops"
-sudo chmod 0755 "${OPSHOME}/.local/bin/ops"
+# source here; the package ships it ONLY under the trustant home, not in /usr/bin.
+sudo cp -a /usr/bin/ops "${TRUHOME}/.local/bin/ops"
+sudo chmod 0755 "${TRUHOME}/.local/bin/ops"
 
-# The build user's ops configuration (downloaded olaris tree, config.json...).
-sudo cp -a "${HOME}/.ops" "${OPSHOME}/.ops"
+# The ops configuration (downloaded olaris tree, config.json...). Already in
+# place when it is the trustant home's own; copied in when falling back.
+if [ "${OPS_CONFIG_SRC}" != "${TRUHOME}/.ops" ]; then
+    sudo rm -rf "${TRUHOME}/.ops"
+    sudo cp -a "${OPS_CONFIG_SRC}" "${TRUHOME}/.ops"
+fi
 
 # The cluster credentials, where ops expects to find them.
-sudo install -d -m 0755 "${OPSHOME}/.ops/tmp"
-sudo cp /etc/rancher/k3s/k3s.yaml "${OPSHOME}/.ops/tmp/kubeconfig"
-sudo chmod 0600 "${OPSHOME}/.ops/tmp/kubeconfig"
+sudo install -d -m 0755 "${TRUHOME}/.ops/tmp"
+sudo cp /etc/rancher/k3s/k3s.yaml "${TRUHOME}/.ops/tmp/kubeconfig"
+sudo chmod 0600 "${TRUHOME}/.ops/tmp/kubeconfig"
+
+# The per-app workspace area, shipped with the right ownership rather than
+# created by the postinst.
+sudo install -d -m 0755 "${TRUHOME}/workspace"
 
 # The environment lives in .bashrc so it applies to non-login shells too
-# (sudo -u ops, ssh "cmd", ...); .profile just sources it, so login shells get
-# exactly the same settings from a single source of truth.
-sudo tee "${OPSHOME}/.bashrc" >/dev/null <<BASHRC
+# (sudo -u trustant, ssh "cmd", ...); .profile just sources it, so login shells
+# get exactly the same settings from a single source of truth.
+sudo tee "${TRUHOME}/.bashrc" >/dev/null <<BASHRC
 export OPS_REPO=${OPS_REPO}
 export OPS_BRANCH=${OPS_BRANCH}
-export PATH=\$PATH:${OPSHOME}/.local/bin
+export PATH=\$PATH:${TRUHOME}/.local/bin
 BASHRC
-sudo chmod 0644 "${OPSHOME}/.bashrc"
+sudo chmod 0644 "${TRUHOME}/.bashrc"
 
-sudo tee "${OPSHOME}/.profile" >/dev/null <<PROFILE
-[ -f ${OPSHOME}/.bashrc ] && . ${OPSHOME}/.bashrc
+sudo tee "${TRUHOME}/.profile" >/dev/null <<PROFILE
+[ -f ${TRUHOME}/.bashrc ] && . ${TRUHOME}/.bashrc
 PROFILE
-sudo chmod 0644 "${OPSHOME}/.profile"
+sudo chmod 0644 "${TRUHOME}/.profile"
 
-# Everything under /var/lib/ops belongs to the ops user, created by the postinst
-# with the same numeric uid/gid. --numeric-owner records 767:767 in data.tar.
-sudo chown -R 767:767 "${OPSHOME}"
+# Everything under /home/trustant belongs to the trustant user, created by the
+# postinst with the same numeric uid/gid. --numeric-owner records 769:769 in
+# data.tar.
+sudo chown -R 769:769 "${TRUHOME}"
 
 # Files bundled verbatim from their real locations (no copy). The two helper
 # scripts above are included here so the whole payload tars from a single root.
@@ -156,10 +175,10 @@ echo "Building data.tar (tarring from source, no copy)..."
 MEMBERS_FILE="${PKGROOT}/members.lst"
 {
     # Each individual file plus all of its ancestor directories. The k3s state
-    # dir and the ops home are listed too so their ancestors (./var, ./var/lib,
-    # ...) are emitted as directory entries; their contents are appended
-    # recursively in passes 2 and 3.
-    for f in "${FILES[@]}" "${K3S_SUBTREE}" "${OPSHOME}"; do
+    # dir and the trustant home are listed too so their ancestors (./var,
+    # ./var/lib, ./home, ...) are emitted as directory entries; their contents
+    # are appended recursively in passes 2 and 3.
+    for f in "${FILES[@]}" "${K3S_SUBTREE}" "${TRUHOME}"; do
         d="$f"
         while [ "$d" != "/" ]; do
             echo ".${d}"
@@ -188,12 +207,12 @@ sudo tar --append --numeric-owner \
     --exclude='./var/lib/rancher/k3s/server/tls' \
     ".${K3S_SUBTREE}"
 
-# Pass 3: append the staged ops home recursively (owned 767:767 on disk, so
-# --numeric-owner carries that ownership straight into the package).
+# Pass 3: append the staged trustant home recursively (owned 769:769 on disk,
+# so --numeric-owner carries that ownership straight into the package).
 sudo tar --append --numeric-owner \
     -f "${DATA_TAR_RAW}" \
     -C / \
-    ".${OPSHOME}"
+    ".${TRUHOME}"
 
 # Compress to data.tar.zst.
 sudo zstd -q -f --rm "${DATA_TAR_RAW}" -o "${DATA_TAR}"
@@ -203,7 +222,7 @@ INSTALLED_SIZE=$(
     {
         for f in "${FILES[@]}"; do sudo du -sk "$f"; done
         sudo du -sk --exclude='*/server/tls' "${K3S_SUBTREE}"
-        sudo du -sk "${OPSHOME}"
+        sudo du -sk "${TRUHOME}"
     } | awk '{s+=$1} END{print s}'
 )
 
@@ -291,16 +310,12 @@ sudo tee "${PKGROOT}/DEBIAN/postinst" >/dev/null <<'EOF'
 #!/bin/bash
 set -e
 
-groupadd --gid 767 ops 2>/dev/null || true
-useradd --uid 767 --gid 767 --no-create-home --home-dir /var/lib/ops --shell /bin/bash ops 2>/dev/null || true
-# The whole /var/lib/ops tree ships in the package already owned 767:767; this only
-# re-asserts it in case the uid/gid had to be allocated differently.
-chown -R ops:ops /var/lib/ops 2>/dev/null || true
-
 groupadd --gid 769 trustant 2>/dev/null || true
-useradd --uid 769 --gid 769 --create-home --home-dir /home/trustant --shell /bin/bash trustant 2>/dev/null || true
-install -d -o trustant -g trustant -m 0755 /home/trustant/workspace
-chown trustant:trustant /home/trustant/workspace
+# --no-create-home: the whole home (ops CLI, .ops config, kubeconfig, workspace)
+# ships in the package, already owned 769:769.
+useradd --uid 769 --gid 769 --no-create-home --home-dir /home/trustant --shell /bin/bash trustant 2>/dev/null || true
+# Re-assert ownership in case the uid/gid had to be allocated differently.
+chown -R trustant:trustant /home/trustant 2>/dev/null || true
 
 cat >/etc/sudoers.d/trustant <<'SUDOERS'
 trustant ALL=(ALL) NOPASSWD:ALL
@@ -366,33 +381,27 @@ if [ "$1" = "remove" ] || [ "$1" = "purge" ]; then
     rmdir /etc/systemd/system/k3s.service.d 2>/dev/null || true
     systemctl daemon-reload 2>/dev/null || true
 
-    if id ops >/dev/null 2>&1; then
-        userdel ops 2>/dev/null || true
-    fi
-    if getent group ops >/dev/null 2>&1; then
-        groupdel ops 2>/dev/null || true
-    fi
-    rm -rf /var/lib/ops
+    # Full cleanup of the k3s state tree. dpkg leaves non-empty dirs (and any
+    # files k3s recreated at runtime) behind, so remove it explicitly.
+    rm -rf /var/lib/rancher/k3s
+fi
 
+# The trustant account and its home survive a plain remove: dpkg takes back the
+# files it shipped under /home/trustant, but anything the user created there is
+# theirs, and deleting the account would orphan it to a bare uid. Only purge
+# removes both.
+if [ "$1" = "purge" ]; then
+    rm -rf /home/trustant
     if id trustant >/dev/null 2>&1; then
         userdel trustant 2>/dev/null || true
     fi
     if getent group trustant >/dev/null 2>&1; then
         groupdel trustant 2>/dev/null || true
     fi
-
-    # Full cleanup of the k3s state tree. dpkg leaves non-empty dirs (and any
-    # files k3s recreated at runtime) behind, so remove it explicitly.
-    rm -rf /var/lib/rancher/k3s
-fi
-
-if [ "$1" = "purge" ]; then
-    # purge also wipes the user's data directory.
-    rm -rf /home/trustant
 else
     cat <<'MSG'
 Your user data is stored under /home/trustant and is not removed automatically.
-To delete it, run: apt-get purge trustant   (or remove /home/trustant manually)
+To delete it, run: apt-get purge openserverless   (or remove /home/trustant manually)
 MSG
 fi
 exit 0

@@ -10,7 +10,7 @@ if which k3s-killall.sh
 then sudo k3s-killall.sh &&  sudo k3s-uninstall.sh
 fi
 
-curl -sfL https://get.k3s.io | sudo sh -s - --node-name trustable
+curl -sfL https://get.k3s.io | sudo sh -s - --node-name trustant
 
 while ! sudo k3s kubectl get storageclass | grep default
 do sleep 1
