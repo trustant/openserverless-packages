@@ -14,14 +14,14 @@ access required.
 
 Because the payload is a snapshot of a live k3s installation, **builds must run
 on a disposable machine** (a CI runner or a throwaway VM). The scripts install
-system packages, create a `trustable` user and take over k3s on the host.
+system packages, create a `trustant` user and take over k3s on the host.
 
 ## Layout
 
 | File | Role |
 | --- | --- |
 | [env](env) | Version inputs: `OPS_BRANCH` and the tasks repo, sourced by every script |
-| [setup.sh](setup.sh) | Installs build dependencies, the `trustable` user and the `ops` CLI |
+| [setup.sh](setup.sh) | Installs build dependencies, the `trustant` user and the `ops` CLI |
 | [prepare.sh](prepare.sh) | Installs k3s, deploys OpenServerless onto it, trims and stops it |
 | [package.sh](package.sh) | Assembles the `.deb` from the prepared machine state |
 | [publish.sh](publish.sh) | Uploads the `.deb` to S3 and records it in the GitHub release |
@@ -35,7 +35,7 @@ Build output goes to `../dist` — a sibling of this directory, not inside it.
 Run the scripts in order on a disposable Debian/Ubuntu machine:
 
 ```bash
-./setup.sh          # dependencies, trustable user, ops CLI
+./setup.sh          # dependencies, trustant user, ops CLI
 ./prepare.sh        # install k3s + deploy OpenServerless (slow)
 sudo -E ./package.sh
 ```
@@ -125,11 +125,34 @@ converge on a single `v<version>` release carrying both `.deb` files.
 sudo apt install ./openserverless_<version>_<arch>.deb
 ```
 
+If the `.deb` sits in your home directory, apt prints a notice that it cannot
+download unsandboxed as `_apt` — that is harmless (note the `N:` prefix): apt
+falls back to copying the file as root and the install proceeds. Move the file
+to `/tmp` to avoid it.
+
 The package refuses to install if OpenServerless is already installed, if another
 k3s installation exists at `/var/lib/rancher/k3s`, or if port 80 is in use — it
 bundles its own k3s and cannot coexist with another one. On success it creates
-the `trustable` user, installs a firewall drop-in restricting ports 80/443/6443
-to non-external traffic, and starts k3s.
+the `trustant` user (uid/gid 769), installs a firewall drop-in restricting ports
+80/443/6443 to non-external traffic, and starts k3s.
+
+### The `trustant` home
+
+`/home/trustant` ships inside the package, already owned `769:769`, so the
+platform can be driven by a dedicated unprivileged account with no further
+setup:
+
+| Path | Contents |
+| --- | --- |
+| `.local/bin/ops` | the `ops` CLI, on `PATH` via `.bashrc` |
+| `.ops` | the ops configuration: downloaded olaris tree, `config.json` |
+| `.ops/tmp/kubeconfig` | the bundled cluster's credentials, where `ops` looks for them |
+| `workspace` | the per-app workspace area |
+| `.bashrc` / `.profile` | `OPS_REPO`, `OPS_BRANCH` and `PATH`; `.profile` just sources `.bashrc`, so login and non-login shells agree |
+
+```bash
+sudo -iu trustant ops -info
+```
 
 The platform is then reachable locally at <http://trustable.miniops.me>, or over
 an SSH tunnel for a remote host:
@@ -140,5 +163,5 @@ ssh -L <port>:127.0.0.1:80 <your-server>
 ```
 
 Removal (`apt-get remove`) stops k3s and wipes `/var/lib/rancher/k3s` but leaves
-user data under `/home/trustable`; `apt-get purge openserverless` removes that
+user data under `/home/trustant`; `apt-get purge openserverless` removes that
 too.
