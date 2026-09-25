@@ -154,12 +154,12 @@ setup:
 sudo -iu trustant ops -info
 ```
 
-The platform is then reachable locally at <http://trustable.miniops.me>, or over
+The platform is then reachable locally at <http://trustant.miniops.me>, or over
 an SSH tunnel for a remote host:
 
 ```bash
 ssh -L <port>:127.0.0.1:80 <your-server>
-# then browse http://trustable.miniops.me:<port>
+# then browse http://trustant.miniops.me:<port>
 ```
 
 Removal (`apt-get remove`) stops k3s and wipes `/var/lib/rancher/k3s` but leaves

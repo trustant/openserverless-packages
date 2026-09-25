@@ -237,7 +237,7 @@ Architecture: ${ARCH}
 Depends: iptables, systemd
 Installed-Size: ${INSTALLED_SIZE}
 Maintainer: Nuvolaris <info@nuvolaris.io>
-Description: Trustable k3s-based platform package
+Description: Trustant k3s-based platform package
  Bundles k3s and trustant helper scripts for offline installation.
 EOF
 
@@ -340,13 +340,13 @@ systemctl start k3s.service
 
 cat <<'MSG'
 **************************************************************************************
-Trustable is accessible only locally through the miniops.me domain.
+Trustant is accessible only locally through the miniops.me domain.
 
-If you are running Trustable on your local machine, open your browser and navigate to:
+If you are running Trustant on your local machine, open your browser and navigate to:
 
 http://trustant.miniops.me
 
-If Trustable is running on a remote server, create an SSH tunnel:
+If Trustant is running on a remote server, create an SSH tunnel:
 
 ssh -L <port>:127.0.0.1:80 <your-server>
 
